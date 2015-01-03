@@ -27,6 +27,7 @@ class Token(object):
         self.value = None
 
     def with_value(self, value):
+        """ return a new token like self but with a specific value """
         new_token = Token(self.ident, self.string)
         new_token.value = value
         return new_token
@@ -77,6 +78,8 @@ class Lexer(object):
         self.indent = [0]
 
     def lex(self, line):
+        """ lexagraphically analyze a line and emit tokens """
+
         line += '\n'
 
         tokens = []
@@ -157,7 +160,8 @@ class Lexer(object):
                     raise SyntaxError('EOL while scanning string literal')
 
             # integer or floating point
-            elif (len(line) >= 2 and line[0] == '.' and line[1] in '0123456789') or \
+            elif (len(line) >= 2 and line[0] == '.' and
+                  line[1] in '0123456789') or \
                     line[0] in '0123456789':
                 string = ''
                 token = Lexer.literal_integer
