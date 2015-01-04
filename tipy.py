@@ -34,9 +34,9 @@ class Token(object):
 
     def __repr__(self):
         if self.value is None:
-            return '(' + str(self.string) + ')'
+            return '<' + str(self.string) + '>'
         else:
-            return '(' + str(self.string) + ', ' + str(self.value) + ')'
+            return '<' + str(self.string) + ', ' + str(self.value) + '>'
 
 
 class Lexer(object):
@@ -72,17 +72,40 @@ class Lexer(object):
 
     # delimiters
     delimiter = Token(600, 'delimiter')
-    delimiters = ['(', ')', '[', ']', '{', '}', ',', ':', '.', ';', '=']
+    delimiters = ['(', ')', '[', ']', '{', '}', ',', ':', '.', ';', '=', '@']
 
     def __init__(self):
         self.indent = [0]
 
+    @staticmethod
+    def _escape(line):
+        """ previous character was a backslash, so handle escape sequences """
+        if len(line) == 0:
+            return '\'', line
+
+        char = line[0]
+        if char == '\'':
+            line = line[1:]
+        elif char == '"':
+            line = line[1:]
+        elif char == '\\':
+            line = line[1:]
+        else:
+            char = '\\'
+
+        return char, line
+
     def lex(self, line):
         """ lexagraphically analyze a line and emit tokens """
 
+        tokens = []
+
+        # if line is empty, ignore
+        if line.strip() == '':
+            return tokens
+
         line += '\n'
 
-        tokens = []
 
         # INDENT
 
@@ -121,6 +144,17 @@ class Lexer(object):
                 tokens.append(Lexer.newline)
                 break
 
+            # LINE CONTINUATION
+            elif len(line) >= 2 and line[:2] == '\\\n':
+                # read in more data, no indent/dedent so continue parsing
+                # as if it is the same line
+                line = line[2:]
+                try:
+                    line += input() + '\n'
+                except EOFError as err:
+                    raise err
+                continue
+
             # IDENTIFIERS and KEYWORDS
             elif line[0] in 'abcdefghijklmnopqrstuvwxyz' \
                     'ABCDEFGHIJKLMNOPQRSTUVWXYZ_':
@@ -137,6 +171,42 @@ class Lexer(object):
 
             # LITERALS
 
+            # longstring
+            elif len(line) >= 3 and (line[:3] == '\'\'\'' or \
+                                     line[:3] == '"""'):
+                quote_string = line[:3]
+                line = line[3:]
+                string = ''
+
+                while True:
+                    while len(line) >= 3 and line[:3] != quote_string:
+                        char = line[0]
+                        line = line[1:]
+
+                        if char == '\\':
+                            char, line = Lexer._escape(line)
+
+                        string += char
+                    if line[:3] == quote_string:
+                        # if prev token was also a literal string, concatinate
+                        token_prev = Lexer.nothing
+                        if len(tokens) > 0:
+                            token_prev = tokens[-1]
+                        if token_prev.ident == Lexer.literal_string.ident:
+                            string = token_prev.value + string
+                            tokens = tokens[:-1]
+                        tokens.append(Lexer.literal_string.with_value(string))
+                        line = line[3:]
+                        break
+                    else:
+                        # we need more data
+                        print(". ", end='')
+                        try:
+                            line += input() + '\n'
+                        except EOFError:
+                            raise SyntaxError('EOF while scanning triple-'
+                                              'quoted string literal')
+
             # shortstring
             elif line[0] == '\'' or line[0] == '"':
                 quote_char = line[0]
@@ -145,6 +215,10 @@ class Lexer(object):
                 while line[0] != quote_char and line[0] != '\n':
                     char = line[0]
                     line = line[1:]
+
+                    if char == '\\':
+                        char, line = Lexer._escape(line)
+
                     string += char
                 if line[0] == quote_char:
                     # if previous token was also a literal string, concatinate
@@ -160,7 +234,7 @@ class Lexer(object):
                     raise SyntaxError('EOL while scanning string literal')
 
             # integer or floating point
-            elif (len(line) >= 2 and line[0] == '.' and
+            elif (len(line) >= 2 and line[0] == '.' and \
                   line[1] in '0123456789') or \
                     line[0] in '0123456789':
                 string = ''
@@ -208,8 +282,18 @@ class Parser(object):
     def parse(self, line):
         """ parse tokens line by line """
 
-        for token in self.lexer.lex(line):
-            print(repr(token))
+        try:
+            for token in self.lexer.lex(line):
+                print(repr(token), end=' ')
+            print()
+        except IndentationError as err:
+            print("Traceback\n " + line)
+            print(err)
+            return None
+        except SyntaxError as err:
+            print("Traceback\n " + line)
+            print(err)
+            return None
         return "<output>"
 
 
@@ -219,16 +303,15 @@ def main():
     ans = ""
     while True:
         try:
-            if ans is not None:
-                print("> ", end='')
-            else:
-                print(". ", end='')
+            print("> ", end='')
             ans = parser.parse(input())
         except EOFError:
             print()
             break
         if ans is not None:
             print(ans, end='\n')
+        else:
+            break
 
 if __name__ == '__main__':
     main()
