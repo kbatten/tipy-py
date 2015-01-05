@@ -280,6 +280,7 @@ class Lexer(object):
         self._pop(len(quote))
 
         yield Lexer.literal_string.with_value(string)
+        self.state = self.state_whitespace
 
     def state_operator(self):
         """ binary and unary operators """
