@@ -106,7 +106,6 @@ class Lexer(object):
 
         line += '\n'
 
-
         # INDENT
 
         # get indent level
@@ -297,21 +296,32 @@ class Parser(object):
         return "<output>"
 
 
-def main():
-    """ entry point """
+def use_repl():
+    """ interactive input """
     parser = Parser()
-    ans = ""
+    prompt = '>'
+    result = ''
     while True:
+        print(prompt, end=' ')
         try:
-            print("> ", end='')
-            ans = parser.parse(input())
+            result = parser.parse(input())
+            if result is not None:
+                print(result)
+                prompt = '>'
+            else:
+                prompt = '.'
         except EOFError:
             print()
             break
-        if ans is not None:
-            print(ans, end='\n')
-        else:
-            break
+
+def use_file(filename):
+    parser = Parser()
+    with open(filename) as f:
+        for line in f:
+            parser.parse(line)
 
 if __name__ == '__main__':
-    main()
+    if len(sys.argv) == 1:
+        use_repl()
+    else:
+        use_file(sys.argv[1])
