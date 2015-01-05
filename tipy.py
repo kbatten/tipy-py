@@ -13,24 +13,18 @@ from __future__ import (
 )
 import sys
 if sys.version_info < (3, 0):
-    input = raw_input
+    input = raw_input  # pylint: disable=redefined-builtin,invalid-name
 
 
-class Token(object):
+class Token(object):  # pylint: disable=too-few-public-methods
     """ basic token, holds identifier along with human readable strings """
-    def __init__(self, ident, string=None):
+    def __init__(self, ident, string=None, value=None):
         self.ident = ident
         if string is None:
             self.string = str(self.ident)
         else:
             self.string = string
-        self.value = None
-
-    def with_value(self, value):
-        """ return a new token like self but with a specific value """
-        new_token = Token(self.ident, self.string)
-        new_token.value = value
-        return new_token
+        self.value = value
 
     def __repr__(self):
         if self.value is None:
@@ -38,12 +32,21 @@ class Token(object):
         else:
             return '<' + str(self.string) + ', ' + str(self.value) + '>'
 
+    def with_value(self, value):
+        """ return a new token like self but with a specific value """
+        new_token = Token(self.ident, self.string)
+        new_token.value = value
+        return new_token
+
 
 class Lexer(object):
     """ convert input line into a stream of tokens """
 
     # tokens
     nothing = Token(0)
+    error = Token(1)
+    error_indentation = Token(error.ident, 'IndentationError')
+    error_syntax = Token(error.ident, 'SyntaxError', 'invalid syntax')
 
     newline = Token(100, 'newline')
     indent = Token(101, 'indent')
@@ -75,204 +78,236 @@ class Lexer(object):
     delimiters = ['(', ')', '[', ']', '{', '}', ',', ':', '.', ';', '=', '@']
 
     def __init__(self):
+        self.state = None
+        self.indent = None
+        self.parens = None
+        self.line = None
+        self.continuation = None
+        self._reset()
+
+    def _reset(self):
+        """ reset full lexer state """
+        self.state = self.state_indent
         self.indent = [0]
+        self.parens = 0
+        self.line = ''
+        self.continuation = False
 
-    @staticmethod
-    def _escape(line):
-        """ previous character was a backslash, so handle escape sequences """
-        if len(line) == 0:
-            return '\'', line
+    def _peek(self, count):
+        """
+        get a list of length count with either character values or None
+        do not modify current data
+        """
+        if len(self.line) >= count:
+            return self.line[:count]
+        return [None] * count
 
-        char = line[0]
-        if char == '\'':
-            line = line[1:]
-        elif char == '"':
-            line = line[1:]
-        elif char == '\\':
-            line = line[1:]
-        else:
-            char = '\\'
-
-        return char, line
+    def _pop(self, count):
+        """
+        get a list of length count with either character values or None
+        update current data by removing count values
+        """
+        if len(self.line) >= count:
+            res = self._peek(count)
+            self.line = self.line[count:]
+            return res
+        return [None] * count
 
     def lex(self, line):
-        """ lexagraphically analyze a line and emit tokens """
+        """ add another line to be lexed and run current state """
 
-        tokens = []
+        # only add line if we are in a continuation or line is not empty
+        if self.continuation is True or line.strip() != '':
+            self.line += line
 
-        # if line is empty, ignore
-        if line.strip() == '':
-            return tokens
+        self.continuation = False
+        # keep running states until out of data or we need a continuation
+        while self.continuation is False and len(self.line) > 0:
+            for token in self.state():
+                if token.ident == Lexer.error.ident:
+                    yield token
+                    # reset state on error
+                    self._reset()
+                    return
+                yield token
 
-        line += '\n'
-
-        # INDENT
-
+    def state_indent(self):
+        """ starting lex state for a new, non-continued line """
         # get indent level
         indent = 0
-        while line[0] == ' ':
+        while self._peek(1) == ' ' or self._peek(1) == '\t':
             indent += 1
-            line = line[1:]
+            self._pop(1)
 
         # if new indent is larger, push it and generate indent token
         if indent > self.indent[0]:
             self.indent.insert(0, indent)
-            tokens.append(Lexer.indent)
+            yield Lexer.indent
 
         # if new indent is smaller, pop off the stack till we match
         while indent < self.indent[0]:
             self.indent = self.indent[1:]
-            tokens.append(Lexer.dedent)
-        # make sure the new indent level matched
+            yield Lexer.dedent
+
+        # make sure the new indent level matches a previous level
         if self.indent[0] != indent:
-            raise IndentationError('unindent does not match any outer'
-                                   'indentation level')
+            yield Lexer.error_indentation.with_value(
+                'unindent does not match any outer indentation level')
+            return
 
-        while True:
-            # WHITESPACE
-            while line[0] == ' ':
-                line = line[1:]
+        self.state = self.state_whitespace
 
-            # NEWLINE
-            if line[0] == '\n':
-                tokens.append(Lexer.newline)
-                break
+    def state_whitespace(self):
+        """ consume all whitespace, but don't generate tokens """
+        while self._peek(1) == ' ' or self._peek(1) == '\t':
+            self._pop(1)
+        self.state = self.state_newline
+        return []  # fake generator
 
-            # COMMENT
-            elif line[0] == '#':
-                tokens.append(Lexer.newline)
-                break
-
-            # LINE CONTINUATION
-            elif len(line) >= 2 and line[:2] == '\\\n':
-                # read in more data, no indent/dedent so continue parsing
-                # as if it is the same line
-                line = line[2:]
-                try:
-                    line += input() + '\n'
-                except EOFError as err:
-                    raise err
-                continue
-
-            # IDENTIFIERS and KEYWORDS
-            elif line[0] in 'abcdefghijklmnopqrstuvwxyz' \
-                    'ABCDEFGHIJKLMNOPQRSTUVWXYZ_':
-                identifier = ''
-                while line[0] in 'abcdefghijklmnopqrstuvwxyz' \
-                        'ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789':
-                    char = line[0]
-                    line = line[1:]
-                    identifier += char
-                if identifier in Lexer.keywords:
-                    tokens.append(Lexer.keyword.with_value(identifier))
-                else:
-                    tokens.append(Lexer.identifier.with_value(identifier))
-
-            # LITERALS
-
-            # longstring
-            elif len(line) >= 3 and (line[:3] == '\'\'\'' or \
-                                     line[:3] == '"""'):
-                quote_string = line[:3]
-                line = line[3:]
-                string = ''
-
-                while True:
-                    while len(line) >= 3 and line[:3] != quote_string:
-                        char = line[0]
-                        line = line[1:]
-
-                        if char == '\\':
-                            char, line = Lexer._escape(line)
-
-                        string += char
-                    if line[:3] == quote_string:
-                        # if prev token was also a literal string, concatinate
-                        token_prev = Lexer.nothing
-                        if len(tokens) > 0:
-                            token_prev = tokens[-1]
-                        if token_prev.ident == Lexer.literal_string.ident:
-                            string = token_prev.value + string
-                            tokens = tokens[:-1]
-                        tokens.append(Lexer.literal_string.with_value(string))
-                        line = line[3:]
-                        break
-                    else:
-                        # we need more data
-                        print(". ", end='')
-                        try:
-                            line += input() + '\n'
-                        except EOFError:
-                            raise SyntaxError('EOF while scanning triple-'
-                                              'quoted string literal')
-
-            # shortstring
-            elif line[0] == '\'' or line[0] == '"':
-                quote_char = line[0]
-                line = line[1:]
-                string = ''
-                while line[0] != quote_char and line[0] != '\n':
-                    char = line[0]
-                    line = line[1:]
-
-                    if char == '\\':
-                        char, line = Lexer._escape(line)
-
-                    string += char
-                if line[0] == quote_char:
-                    # if previous token was also a literal string, concatinate
-                    token_prev = Lexer.nothing
-                    if len(tokens) > 0:
-                        token_prev = tokens[-1]
-                    if token_prev.ident == Lexer.literal_string.ident:
-                        string = token_prev.value + string
-                        tokens = tokens[:-1]
-                    tokens.append(Lexer.literal_string.with_value(string))
-                    line = line[1:]
-                else:
-                    raise SyntaxError('EOL while scanning string literal')
-
-            # integer or floating point
-            elif (len(line) >= 2 and line[0] == '.' and \
-                  line[1] in '0123456789') or \
-                    line[0] in '0123456789':
-                string = ''
-                token = Lexer.literal_integer
-                while line[0] in '0123456789.':
-                    char = line[0]
-                    line = line[1:]
-                    string += char
-                    if token.ident == Lexer.literal_integer.ident and \
-                            char == '.':
-                        token = Lexer.literal_float
-                    elif char == '.':
-                        raise SyntaxError('invalid syntax')
-                tokens.append(token.with_value(string))
-
-            # OPERATORS
-            elif (len(line) >= 2 and line[:2] in Lexer.operators) or \
-                    line[0] in Lexer.operators:
-                if len(line) >= 2 and line[:2] in Lexer.operators:
-                    tokens.append(Lexer.operator.with_value(line[:2]))
-                    line = line[2:]
-                elif line[0] in Lexer.operators:
-                    tokens.append(Lexer.operator.with_value(line[0]))
-                    line = line[1:]
-                else:
-                    raise SyntaxError('invalid syntax')
-
-            # DELIMITERS
-            elif line[0] in Lexer.delimiters:
-                tokens.append(Lexer.delimiter.with_value(line[0]))
-                line = line[1:]
-
+    def state_newline(self):
+        """ lex a newline, if found then go to starting state """
+        if self._peek(1) == '\n':
+            self._pop(1)
+            if self.parens == 0:
+                # only generate newline if we are not in a paren block
+                yield Lexer.newline
+                # go to starting state
+                self.state = self.state_indent
             else:
-                raise SyntaxError('invalid syntax')
+                # we are in a paren block
+                self.state = self.state_whitespace
+        else:
+            self.state = self.state_comment
 
-        return tokens
+    def state_comment(self):
+        """ discard comments, turns into a newline and go to starting state"""
+        if self._peek(1) == '#':
+            # consume through the newline
+            while self._pop(1) != '\n':
+                pass
+            yield Lexer.newline
+            # go to starting state
+            self.state = self.state_indent
+        else:
+            self.state = self.state_line_continuation
+
+    def state_line_continuation(self):
+        """ backslash means we need another line """
+        if self._peek(2) == '\\\n':
+            self._pop(2)
+            self.continuation = True
+            self.state = self.state_whitespace
+        else:
+            self.state = self.state_identifier
+        return []  # fake generator
+
+    def state_identifier(self):
+        """ either an identifier or a keyword """
+        if self._peek(1) in 'abcdefghijklmnopqrstuvwxyz' \
+                            'ABCDEFGHIJKLMNOPQRSTUVWXYZ_':
+            identifier = ''
+            while self._peek(1) in 'abcdefghijklmnopqrstuvwxyz' \
+                                   'ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789':
+                identifier += self._pop(1)
+            if identifier in Lexer.keywords:
+                yield Lexer.keyword.with_value(identifier)
+            else:
+                yield Lexer.identifier.with_value(identifier)
+            self.state = self.state_whitespace
+        else:
+            self.state = self.state_number
+
+    def state_number(self):
+        """ integer or float literal """
+        if (self._peek(2)[0] == '.' and self._peek(2)[1] in '0123456789') or \
+                self._peek(1) in '0123456789':
+            number = ''
+            token = Lexer.literal_integer
+            while self._peek(1) in '0123456789.':
+                char = self._pop(1)
+                number += char
+                if token.ident == Lexer.literal_integer.ident and \
+                        char == '.':
+                    token = Lexer.literal_float
+                elif char == '.':
+                    yield Lexer.error_syntax
+                    return
+            yield token.with_value(number)
+            self.state = self.state_whitespace
+        else:
+            self.state = self.state_string
+
+    def state_string(self):
+        """ long and short strings """
+        quote = None
+
+        if self._peek(3) == '\'\'\'' or self._peek(3) == '"""':
+            quote = self._pop(3)
+        elif self._peek(1) == '\'' or self._peek(1) == '"':
+            quote = self._pop(1)
+        else:
+            self.state = self.state_operator
+            return
+
+        string = ''
+        while self._peek(len(quote)) != quote:
+            char = self._pop(1)
+
+            # handle escape sequences
+            if char == '\\':
+                char = self._peek(1)
+                if char == '\\':
+                    char = self._pop(1)
+                elif char == '\'':
+                    char = self._pop(1)
+                elif char == '"':
+                    char = self._pop(1)
+                elif char == 't':
+                    char = '\t'
+                    self._pop(1)
+
+            string += char
+            if char == '\n' and len(quote) == 1:
+                yield Lexer.error_syntax.with_value(
+                    'EOL while scanning string literal')
+                return
+            elif char == '\n' and len(self.line) == 0:
+                # multi-line triple quote string, so reset and get more lines
+                # NOTE: this seems a bit clumsy
+                self.line = quote + string
+                self.continuation = True
+                return
+        self._pop(len(quote))
+
+        yield Lexer.literal_string.with_value(string)
+
+    def state_operator(self):
+        """ binary and unary operators """
+        if self._peek(2) in Lexer.operators:
+            yield Lexer.operator.with_value(self._pop(2))
+            self.state = self.state_whitespace
+        elif self._peek(1) in Lexer.operators:
+            yield Lexer.operator.with_value(self._pop(1))
+            self.state = self.state_whitespace
+        else:
+            self.state = self.state_delimiter
+
+    def state_delimiter(self):
+        """ lexer delimiters, some may be syntax operators """
+        if self._peek(1) in Lexer.delimiters:
+            if self._peek(1) == '(':
+                self.parens += 1
+            elif self._peek(1) == ')':
+                self.parens -= 1
+            yield Lexer.delimiter.with_value(self._pop(1))
+            if self.parens < 0:
+                yield Lexer.error_syntax
+            self.state = self.state_whitespace
+        else:
+            self.state = self.state_whitespace  # no more states
 
 
-class Parser(object):
+class Parser(object):  # pylint: disable=too-few-public-methods
     """ lex and evaluate input lines """
 
     def __init__(self):
@@ -281,19 +316,20 @@ class Parser(object):
     def parse(self, line):
         """ parse tokens line by line """
 
-        try:
-            for token in self.lexer.lex(line):
-                print(repr(token), end=' ')
-            print()
-        except IndentationError as err:
-            print("Traceback\n " + line)
-            print(err)
+        for token in self.lexer.lex(line):
+            if token.ident == Lexer.error:
+                # if the lexer found an error, print it
+                print("Traceback\n " + line)
+                print(token)
+                return
+            print(repr(token), end=' ')
+        print()
+
+        # if we need another line, return None
+        if self.lexer.continuation is True or self.lexer.parens > 0:
             return None
-        except SyntaxError as err:
-            print("Traceback\n " + line)
-            print(err)
-            return None
-        return "<output>"
+
+        return ""
 
 
 def use_repl():
@@ -304,9 +340,10 @@ def use_repl():
     while True:
         print(prompt, end=' ')
         try:
-            result = parser.parse(input())
+            result = parser.parse(input() + '\n')
             if result is not None:
-                print(result)
+                if result != '':
+                    print(result)
                 prompt = '>'
             else:
                 prompt = '.'
@@ -314,11 +351,14 @@ def use_repl():
             print()
             break
 
+
 def use_file(filename):
+    """ read from a file """
     parser = Parser()
-    with open(filename) as f:
-        for line in f:
+    with open(filename) as pyfile:
+        for line in pyfile:
             parser.parse(line)
+
 
 if __name__ == '__main__':
     if len(sys.argv) == 1:
