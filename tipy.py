@@ -318,11 +318,11 @@ class Parser(object):  # pylint: disable=too-few-public-methods
         """ parse tokens line by line """
 
         for token in self.lexer.lex(line):
-            if token.ident == Lexer.error:
+            if token.ident == Lexer.error.ident:
                 # if the lexer found an error, print it
                 print("Traceback\n " + line)
                 print(token)
-                return
+                return ''
             print(repr(token), end=' ')
         print()
 
@@ -330,7 +330,7 @@ class Parser(object):  # pylint: disable=too-few-public-methods
         if self.lexer.continuation is True or self.lexer.parens > 0:
             return None
 
-        return ""
+        return ''
 
 
 def use_repl():
